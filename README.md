@@ -1,2 +1,52 @@
 # hats_testing_aurora
+
+
 Scripts and notebooks created to test timing of opening/using source catalogs with LSDB, and to import source catalogs to the HATS format (on the argdev server "aurora")
+
+
+- This repository contains python scripts used to test importing a source catalog to HATS format.
+- The LSDB and hats-import packages are used and tested.  
+- These scripts were created to be run on the server "Aurora" and assume that the reference source catalog ATLAS-Refcat2 is saved to disk in /etc/rico/atlas_refcat2/ in a certain format (see select_cat_sample.py for description of that format).  
+- Catalogs (samples and full catalogs) are saved to /net/scratch/kmfas/.
+- The final goal of this testing is to fully import the entire ATLAS-Refcat2 reference source catalog to HATS format, in order to be able to efficiently analyze and retrieve the catalog for use in Argus HDPS and in generating the Argus Input Catalog.
+
+
+**Files in this directory:**
+*(Note that these are listed in order of creation)
+
+- select_cat_samply.py
+    - contains a function to select a random sample of sources from a SMALL fraction of a reference catalog (i.e. ATLAS-Refcat2)
+        - this was created to test out importing small toy catalogs with both lsdb.from_dataframe() and a hats-import pipeline.  
+    - main code tests timing for reading in a certain percentage of ATLAS for a several numbers of files (in which un-HATS-ed ATLAS sources are saved on Aurora)
+
+- feather_to_csv_atlas.py 
+    - contains a function to create csv files with ATLAS-Refcat2 sources, pulling data from feather files with those sources.  
+        - this was created becasue lsdb and hats-import don't have built-in capabilities for reading in feather files.  This is now redundant, as I (Katie) have created a feather file reader that can be utilized by hats-import for reading in un-HATSed sources.  This is also requires all the data read from feather files to be saved to disk in csv files, which takes up a lot of memory, hence my creation of a class to read feather files for hats-import. 
+
+- hats_timing_test.py
+    - contains tests to time how long it takes to retrieve sources from a reference catalog (ATLAS) within a cone search of various radii, in crowded and sparse fields.
+        - this was done to determine whether we should use lsdb to retrieve reference sources from a HATS-ed catalog, for calibrating Argus sources in HDPS.  The pipeline needs to be fast, so the quicker we can call these sources, the better.  LSDB is fast, but it does lazily load the sources and doesn't fully load data until you tell it to; this means all computations are simply "planned" and not executed until further down the road.  Further tests are required.
+
+- hats_import_smallcat.py
+    - main code selects a fraction of a reference catalog of sources (ATLAS) from disk [or alternatively reads in a small cat you've saved in a csv file, on-disk] and imports the catalog to HATS format with lsdb.from_dataframe().  The HATS-ed catalog is saved to disk.  
+        - this is for testing purposes with a small (small!) catalog; for larger samples or full catalogs, use hats-import (hats_import_with_pipeline.py)
+        - (just to make sure importing works on Aurora, and to generate a toy HATS-ed catalog for testing.)
+
+- hats_import_with_pipeline.py
+    - contains a class to read feather files for hats-import
+    - contains a function to import a given catalog to HATS format and save to disk using a hats-import pipeline, and import arguments
+    - main code sets up a Dask Client and call the above function to read in a certain number of files (or all files) containing un-HATS-ed sources from a reference source catalog (ATLAS) and import the catalog to HATS with a hats-import pipeline, and define import arguments to do so. 
+    - this script can be run with `hats_atlas.sh`
+
+- `hats_atlas.sh` 
+    - a shell script created to import an entire reference source catalog (ATLAS) to HATS format; this is a time-intensie process, and must be done in the background.  
+    - I have elected to run this with TMUX, which allows for processes (on a linux server) to be run in the background, uninterrupted by the user logging out of the server. 
+
+- hats_import_tests.ipynb
+    - a notebook with 
+
+
+ 
+
+
+
