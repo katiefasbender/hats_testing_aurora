@@ -1,6 +1,10 @@
 '''
 Import a catalog (or a fraction of a catalog) with the hats-import pipeline and a Dask Client.
 
+This script defines class "FeatherReader" to read input files containing un-HATSed catalog sources, to feed to the hats-import pipeline.
+
+Example run command:
+uv run hats_testing_aurora/scripts/hats_import_with_pipeline.py --cat_outname atlas_1000files --nfiles 1000
 
 '''
 
@@ -8,7 +12,7 @@ Import a catalog (or a fraction of a catalog) with the hats-import pipeline and 
 from argparse import ArgumentParser
 import glob
 from hats_import.catalog.arguments import ImportArguments
-from hats_import.pipeline import pipeline
+from hats_import.pipeline import pipeline, pipeline_with_client
 import healpy as hp
 import numpy as np
 import os
@@ -16,7 +20,7 @@ import pandas as pd
 import sys
 import time
 
-
+# imports for FeatherReader:
 from hats.io import file_io
 from hats.io.file_io.file_pointer import get_upath
 
@@ -30,12 +34,14 @@ from collections.abc import Generator
 from hats_import.catalog.file_readers.input_reader import InputReader
 
 
-
+def test_func(x,y):
+    z = x+y
+    return(z)
 
 class FeatherReader(InputReader):
     """Feather reader for the most common Feather reading arguments.
 
-    This uses `pandas.read_feather`
+    Uses `pandas.read_feather`
 
     Attributes:
         header (int, list of int, None, default 'infer'): rows to
@@ -95,22 +101,21 @@ class FeatherReader(InputReader):
         for sub_file in [f_file[i:i+self.chunksize] for i in range(0,f_file.shape[0],self.chunksize)]:
             yield sub_file
 
-
-
-def import_pipeline(lst,cat_outpath,cat_outname,filereader,lo_hporder=2,hi_hporder=10,pix_thresh=5000,n_dask=4):
+def import_pipeline(lst,cat_outpath,cat_outname,filereader,lo_hporder=2,hi_hporder=10,pix_thresh=5000,n_dask_workers=1,n_dask_threads=1):
     '''
-    Import a catalog to HATS format with hats-import pipeline()
+    Import a catalog to HATS format with hats-import.pipeline()
     
     Arguments
     ---------
-        lst: (str list) list of files with cat data in native non-hatsed format; expects "ra" and "dec" columns
+        lst: (str list) list of files with cat data in non-hatsed format; expects "ra" and "dec" columns
         cat_outpath: (str) Full path to directory where HATSed cat will be written
         cat_outname: (str) Name of HATSed cat
-        filereader: (FileReader Object) File Reader to pull in native-format cat data (i.e. FeatherReader)
+        filereader: (FileReader Object) File Reader to pull in un-HATS-ed cat data (i.e. FeatherReader)
         lo_hporder: (int, Default = 2) Lowest-order HPix for tiling
         hi_hporder: (int, Default = 10) Highest-order HPix for tiling
         pix_thresh: (int, Default = 5000) Max #sources per tile
-        n_dask: (int, Default = 4) # dask workers for Client
+        n_dask_workers: (int, Default = 1) # Dask workers for Client
+        n_dask_threads: (int, Default=1) # threads per Dask worker
 
     Returns
     --------
@@ -126,10 +131,43 @@ def import_pipeline(lst,cat_outpath,cat_outname,filereader,lo_hporder=2,hi_hpord
         lowest_healpix_order=lo_hporder,
         highest_healpix_order=hi_hporder,
         pixel_threshold=pix_thresh,
-        dask_n_workers=n_dask,
+        dask_n_workers=n_dask_workers,
+        dask_threads_per_worker=n_dask_threads,
         )
     pipeline(args)
 
+def import_pipeline_with_client(client,lst,cat_outpath,cat_outname,filereader,lo_hporder=2,hi_hporder=10,pix_thresh=5000):
+    '''
+    Import a catalog to HATS format with hats-import.pipeline()
+    
+    Arguments
+    ---------
+        client: (Dask Client) a Dask Client that you have set up appropriately
+        lst: (str list) list of files with cat data in non-hatsed format; expects "ra" and "dec" columns
+        cat_outpath: (str) Full path to directory where HATSed cat will be written
+        cat_outname: (str) Name of HATSed cat
+        filereader: (FileReader Object) File Reader to pull in un-HATS-ed cat data (i.e. FeatherReader)
+        lo_hporder: (int, Default = 2) Lowest-order HPix for tiling
+        hi_hporder: (int, Default = 10) Highest-order HPix for tiling
+        pix_thresh: (int, Default = 5000) Max #sources per tile
+
+
+    Returns
+    --------
+        Nothing, HATSed cat is written to cat_outpath/cat_outname
+    '''
+    args = ImportArguments(
+        ra_column="ra",
+        dec_column="dec",
+        input_file_list=lst,
+        file_reader=filereader,
+        output_artifact_name=cat_outname,
+        output_path=cat_outpath,
+        lowest_healpix_order=lo_hporder,
+        highest_healpix_order=hi_hporder,
+        pixel_threshold=pix_thresh,
+        )
+    pipeline_with_client(client,args)
 
 
 if __name__=="__main__":
@@ -141,30 +179,33 @@ if __name__=="__main__":
     # Define input arguments
     parser = ArgumentParser(description="Import a catalog (cat) to HATS format with the hats-import pipeline.")
     parser.add_argument('--cat',type=str,nargs=1,default=["atlas"],help="Name of cat.  Currently supported:\n    ''atlas'' (ATLAS-Refcat2, Default)")
-    parser.add_argument("--cat_native_files",type=str,nargs=1,default=["*/*/*.feather"],help="Cat native format file locations/extention, Default = ''*/*/*.feather''")
+    parser.add_argument('--cat_inpath',type=str,nargs=1,default=["/etc/rico/atlas_refcat2/"],help="Location of directory containing un-HATS-ed catalog, Default = ''/etc/rico/atlas_refcat2/''")
+    parser.add_argument("--cat_infiles",type=str,nargs=1,default=["*/*/*.feather"],help="Un-HATS-ed catalog file locations/extention within cat_inpath, Default = ''*/*/*.feather''")
     parser.add_argument('--cat_outpath',type=str,nargs=1,default=["atlas_refcat2/"],help="Path to directory in /net/scratch/kmfas/ where HATS-ed cat will be written (Default: ''atlas_refcat2/'')")
     parser.add_argument('--cat_outname',type=str,nargs=1,default=["atlas_hatsed"],help="Name of HATS-ed cat; it will be written to /net/scratch/kmfas/<cat_outpath>/<cat_outname>, will not overwrite!!! (Default: ''atlas_hatsed'')")
-    parser.add_argument('--nfiles', type=float, nargs=1, default=[0],help="Number of files to import (For testing purposes).  Default: 0 (meaning import all files)")
+    parser.add_argument('--nfiles', type=float, nargs=1, default=[0],help="Number of files to import (For testing purposes).  Default: 0 (imports all files)")
     args = parser.parse_args()
 
     # Get inputs
 
-    # cat name
+    # catalog name
     cat = args.cat[0]
     if cat=="atlas":
         cat_name = "ATLAS-Refcat2"
-        cat_path = "/etc/rico/atlas_refcat2/" # where cat is stored in native format 
     else:
         print(f"So sorry, cat {cat} is not supported.  Good bye.")
         sys.exit()
 
-    # cat native files (Native file format in which un-HATS-ed cat is stored)
-    cat_native_files = args.cat_native_files[0]
+    # directory on disk containing un-HATS-ed catalog
+    cat_inpath = args.cat_inpath[0]
 
-    # cat outpath (where  hatsed cat will go)
+    # files containing un-HATS-ed catalog, on disk
+    cat_infiles = args.cat_infiles[0] # cat_native_files
+
+    # catalog output path (where  HATS-ed cat will go)
     cat_outpath = "/net/scratch/kmfas/" + args.cat_outpath[0]
 
-    # cat outname (name of HATASed cat)
+    # catalog output name (name of HATASed cat)
     cat_outname = args.cat_outname[0]
 
     # number of files (for testing; if 0, import from all files)
@@ -173,34 +214,33 @@ if __name__=="__main__":
         lo_hp = 2
         hi_hp = 10
         pix_thrsh = 5000
-        n_dask = 4
     elif nfiles>=1000:
         lo_hp = 2
         hi_hp = 12
         pix_thrsh = 5000
-        n_dask = 6
     elif nfiles==0:
         lo_hp = 2
         hi_hp = 12
         pix_thrsh = 5000
-        n_dask = 6
+    n_dask_workers = 1 # number of Dask workers for Client
+    n_dask_threads = 1 # number of threads per Dask worker
 
 
     # Get down to business
     # --------------------
 
     # Get a list of cat files
-    lst = glob.glob(cat_path+cat_native_files,recursive=True)
+    lst = glob.glob(cat_inpath+cat_infiles,recursive=True)
     ntot = len(lst)
     if nfiles!=0: lst = lst[:nfiles]
 
     # Import the catalog 
     print(f"Importing catalog {cat_name} to HATS format....")
-    if nfiles!=0: print(f"...only from {nfiles}/{ntot} files in {cat_path}")
-    else: print(f"...from all {ntot} files in {cat_path}")
+    if nfiles!=0: print(f"...only from {nfiles}/{ntot} files in {cat_inpath}")
+    else: print(f"...from all {ntot} files in {cat_inpath}")
     print(f"HATSed catalog will be written to {cat_outpath+cat_outname}")
     print("---------------------------------------")
-    import_pipeline(lst,cat_outpath,cat_outname,FeatherReader(),lo_hp,hi_hp,pix_thrsh,n_dask)
+    #import_pipeline(lst,cat_outpath,cat_outname,FeatherReader(),lo_hp,hi_hp,pix_thrsh,n_dask_workers,n_dask_threads)
     print("---------------------------------------")
     print("Catalog imported?")
 
@@ -302,3 +342,33 @@ if __name__=="__main__":
 #Catalog: Reducing  : 100%|█████████████████████████████████████████████████████████████████████████████████████████| 26586/26586 [07:46<00:00, 56.95it/s]
 #Catalog: Finishing : 100%|█████████████████████████████████████████████████████████████████████████████████████████████████| 6/6 [00:55<00:00,  9.23s/it]
 #177.52023015199998  seconds to import failed csv conversion batch, 4 dask workers
+
+
+
+# 100 files with 1 dask worker 
+#Importing catalog ATLAS-Refcat2 to HATS format....
+#...only from 100/3072 files in /etc/rico/atlas_refcat2/
+#HATSed catalog will be written to /net/scratch/kmfas/atlas_refcat2/atlas_100files
+#---------------------------------------
+#Catalog: Planning  : 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:00<00:00, 876.78it/s]
+#Catalog: Mapping   : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 100/100 [00:09<00:00, 10.47it/s]
+#Catalog: Binning   : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [00:38<00:00, 19.37s/it]
+#Catalog: Splitting : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 100/100 [01:26<00:00,  1.16it/s]
+#Catalog: Reducing  : 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4936/4936 [03:41<00:00, 22.25it/s]
+#Catalog: Finishing : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 6/6 [00:08<00:00,  1.35s/it]
+#---------------------------------------
+#Catalog imported?
+
+# 500 files with one dask worker
+#Importing catalog ATLAS-Refcat2 to HATS format....
+#...only from 500/3072 files in /etc/rico/atlas_refcat2/
+#HATSed catalog will be written to /net/scratch/kmfas/atlas_refcat2/atlas_500files
+#---------------------------------------
+#Catalog: Planning  : 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:00<00:00, 574.96it/s]
+#Catalog: Mapping   : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 500/500 [01:24<00:00,  5.91it/s]
+#Catalog: Binning   : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [00:46<00:00, 23.02s/it]
+#Catalog: Splitting : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 500/500 [21:26<00:00,  2.57s/it]
+#Catalog: Reducing  : 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 74768/74768 [1:13:08<00:00, 17.04it/s]
+#Catalog: Finishing : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 6/6 [03:28<00:00, 34.68s/it]
+#---------------------------------------
+#Catalog imported?
