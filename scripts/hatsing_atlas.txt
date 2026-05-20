@@ -1,0 +1,17 @@
+#HATS-ing ATLAS-Refcat2
+
+ATLAS-Refcat2 is an all-sky stellar reference catalog with ~1B rows.  
+It is being used as a reference catalog for testing Argus HDPS pipeline functionality, namely calibration.
+
+I am attempting to import the catalog to HATS format using the hats-import package, which uses a Dask Client to schedule and execute parallel computation.  
+There are several things that must be determined:
+
+Dask Cluster for importing full catalog:
+- number of workers
+- number of threads per worker
+- memory limit per worker 
+
+Import Arguments for hats-import pipeline:
+- lowest-order healpix 
+- highest-order healpix
+- pixel threshold (maximum number of sources per pixel/partition; depends on total catalog size/coverage, LINCC provides guidance here: https://hats-import.readthedocs.io/en/stable/notebooks/estimate_pixel_threshold.html)

@@ -10,6 +10,7 @@ uv run hats_testing_aurora/scripts/hats_import_with_pipeline.py --cat_outname at
 
 
 from argparse import ArgumentParser
+from dask.distributed import Client
 import glob
 from hats_import.catalog.arguments import ImportArguments
 from hats_import.pipeline import pipeline, pipeline_with_client
@@ -34,11 +35,7 @@ from collections.abc import Generator
 from hats_import.catalog.file_readers.input_reader import InputReader
 
 
-def test_func(x,y):
-    z = x+y
-    return(z)
-
-class FeatherReader(InputReader):
+class FeatherReader_oldddddddd(InputReader):
     """Feather reader for the most common Feather reading arguments.
 
     Uses `pandas.read_feather`
@@ -100,6 +97,77 @@ class FeatherReader(InputReader):
         f_file = pd.read_feather(input_file)
         for sub_file in [f_file[i:i+self.chunksize] for i in range(0,f_file.shape[0],self.chunksize)]:
             yield sub_file
+
+
+class FeatherReader(InputReader):
+    """Feather reader for the most common Feather reading arguments.
+
+    Uses `pandas.read_feather`
+
+    Attributes:
+        header (int, list of int, None, default 'infer'): rows to
+            use as the header with column names
+        schema_file (str): path to a parquet schema file. if provided, header names
+            and column types will be pulled from the parquet schema metadata.
+        column_names (list[str]): the names of columns if no header is available
+        type_map (dict): the data types to use for columns
+        parquet_kwargs (dict): additional keyword arguments to use when
+            reading the parquet schema metadata, passed to pandas.read_parquet.
+            See https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html
+        kwargs (dict): additional keyword arguments to use when reading
+            the feather files with pandas.read_feather.
+    """
+
+    def __init__(
+        self,
+        chunksize=500_000,
+        header="infer",
+        schema_file=None,
+        column_names=None,
+        type_map=None,
+        parquet_kwargs=None,
+        upath_kwargs=None,
+        **kwargs,
+    ):
+        self.chunksize = chunksize
+        self.header = header
+        self.schema_file = schema_file
+        self.column_names = column_names
+        self.type_map = type_map
+        self.parquet_kwargs = parquet_kwargs
+        self.upath_kwargs = upath_kwargs
+        self.kwargs = kwargs
+
+        schema_parquet = None
+        if self.schema_file:
+            if self.parquet_kwargs is None:
+                self.parquet_kwargs = {}
+            schema_parquet = file_io.read_parquet_file_to_pandas(
+                self.schema_file,
+                **self.parquet_kwargs,
+            )
+
+        if self.column_names:
+            self.kwargs["names"] = self.column_names
+        elif not self.header and schema_parquet is not None:
+            self.kwargs["names"] = list(schema_parquet.columns)
+
+        if self.type_map:
+            self.kwargs["dtype"] = self.type_map
+        elif schema_parquet is not None:
+            self.kwargs["dtype"] = schema_parquet.dtypes.to_dict()
+
+    def read(self, input_file,read_columns=None) -> Generator[pd.DataFrame]:
+        input_file = self.regular_file_exists(input_file)
+        
+        # read feather file in chunks
+        reader = pa.ipc.open_file(input_file)
+        for i in range(reader.num_record_batches):
+            batch = reader.get_batch(i)
+            df = batch.to_pandas()
+            yield df
+
+
 
 def import_pipeline(lst,cat_outpath,cat_outname,filereader,lo_hporder=2,hi_hporder=10,pix_thresh=5000,n_dask_workers=1,n_dask_threads=1):
     '''
@@ -167,7 +235,7 @@ def import_pipeline_with_client(client,lst,cat_outpath,cat_outname,filereader,lo
         highest_healpix_order=hi_hporder,
         pixel_threshold=pix_thresh,
         )
-    pipeline_with_client(client,args)
+    pipeline_with_client(args,client)
 
 
 if __name__=="__main__":
@@ -184,6 +252,7 @@ if __name__=="__main__":
     parser.add_argument('--cat_outpath',type=str,nargs=1,default=["atlas_refcat2/"],help="Path to directory in /net/scratch/kmfas/ where HATS-ed cat will be written (Default: ''atlas_refcat2/'')")
     parser.add_argument('--cat_outname',type=str,nargs=1,default=["atlas_hatsed"],help="Name of HATS-ed cat; it will be written to /net/scratch/kmfas/<cat_outpath>/<cat_outname>, will not overwrite!!! (Default: ''atlas_hatsed'')")
     parser.add_argument('--nfiles', type=float, nargs=1, default=[0],help="Number of files to import (For testing purposes).  Default: 0 (imports all files)")
+    parser.add_argument('--with_client',action='store_true',help="Define a client with a memory limit")
     args = parser.parse_args()
 
     # Get inputs
@@ -214,16 +283,20 @@ if __name__=="__main__":
         lo_hp = 2
         hi_hp = 10
         pix_thrsh = 5000
+        n_dask_workers = 2 # number of Dask workers for Client
+        n_dask_threads = 1 # number of threads per Dask worker
     elif nfiles>=1000:
         lo_hp = 2
         hi_hp = 12
-        pix_thrsh = 5000
+        pix_thrsh = 10000
+        n_dask_workers = 4 # number of Dask workers for Client
+        n_dask_threads = 1 # number of threads per Dask worker
     elif nfiles==0:
         lo_hp = 2
         hi_hp = 12
-        pix_thrsh = 5000
-    n_dask_workers = 1 # number of Dask workers for Client
-    n_dask_threads = 1 # number of threads per Dask worker
+        pix_thrsh = 500000
+        n_dask_workers = 4 # number of Dask workers for Client
+        n_dask_threads = 1 # number of threads per Dask worker
 
 
     # Get down to business
@@ -240,7 +313,14 @@ if __name__=="__main__":
     else: print(f"...from all {ntot} files in {cat_inpath}")
     print(f"HATSed catalog will be written to {cat_outpath+cat_outname}")
     print("---------------------------------------")
-    #import_pipeline(lst,cat_outpath,cat_outname,FeatherReader(),lo_hp,hi_hp,pix_thrsh,n_dask_workers,n_dask_threads)
+    if not args.with_client:
+        import_pipeline(lst,cat_outpath,cat_outname,FeatherReader(),lo_hp,hi_hp,pix_thrsh,n_dask_workers,n_dask_threads)
+    else:
+        print("importing with special client")
+        memlim = "20GiB"
+        print("memory limit = ",memlim,", nworkers = ",n_dask_workers,", nthread/worker = ",n_dask_threads)
+        with Client(n_workers=n_dask_workers,memory_limit=memlim,threads_per_worker=n_dask_threads) as client:
+            import_pipeline_with_client(client,lst,cat_outpath,cat_outname,FeatherReader(),lo_hp,hi_hp,pix_thrsh)
     print("---------------------------------------")
     print("Catalog imported?")
 
@@ -372,3 +452,40 @@ if __name__=="__main__":
 #Catalog: Finishing : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 6/6 [03:28<00:00, 34.68s/it]
 #---------------------------------------
 #Catalog imported?
+
+# 500 files with 2 workers, 16G memory, 1 thread per worker
+#Importing catalog ATLAS-Refcat2 to HATS format....
+#...only from 500/3072 files in /etc/rico/atlas_refcat2/
+#HATSed catalog will be written to /net/scratch/kmfas/atlas_refcat2/atlas_500files
+#---------------------------------------
+#importing with special client
+#Catalog: Planning  :   0%|                                                                                                                                               | 0/4 [00:00<?, ?it/s]tmp_path (/net/scratch/kmfas/atlas_refcat2/atlas_500files/intermediate) contains intermediate files; resuming prior progress.
+#Catalog: Planning  : 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:00<00:00, 504.61it/s]
+#Catalog: Mapping   : 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 370/370 [00:34<00:00, 10.81it/s]
+#Catalog: Binning   : 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [00:43<00:00, 21.98s/it]
+#Catalog: Splitting : 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 500/500 [10:54<00:00,  1.31s/it]
+#Catalog: Reducing  : 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 74768/74768 [31:39<00:00, 39.36it/s]
+#Catalog: Finishing : 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 6/6 [03:17<00:00, 32.91s/it]
+#----------------------
+#Catalog imported?
+
+# Full catalog with pixel threshold 5,000,000, lo_order = 2, hi_order = 12
+#(argvenv) kmfas@aurora:~$ uv run hats_testing_aurora/scripts/hats_import_with_pipeline.py --cat_outname atlas_hatsed -nfiles 0 --with_client                                                                                                   
+#Importing catalog ATLAS-Refcat2 to HATS format....                                                                      
+#...from all 3072 files in /etc/rico/atlas_refcat2/                                                                      
+#HATSed catalog will be written to /net/scratch/kmfas/atlas_refcat2/atlas_hatsed                                         
+#---------------------------------------                                                                                 
+#importing with special client                                                                                           
+#memory limit =  16GiB , nworkers =  4 , nthread/worker =  1                                                             
+#Catalog: Planning  : 100%|███████████████████████████████████████████████████████████████| 4/4 [00:00<00:00, 350.32it/s]
+#Catalog: Mapping   : 100%|████████████████████████████████████████████████████████| 3072/3072 [1:13:03<00:00,  1.43s/it]
+#Catalog: Binning   : 100%|███████████████████████████████████████████████████████████████| 2/2 [16:46<00:00, 503.37s/it]
+#Catalog: Splitting : 100%|████████████████████████████████████████████████████████| 3072/3072 [1:57:56<00:00,  2.30s/it]
+#Catalog: Reducing  :   1%|▎                                                             | 3/522 [00:10<29:12,  3.38s/it]
+# workers crashed all over the damn place
+#Catalog: Reducing  : 100%|████████████████████████████████████████████████████████████| 522/522 [17:30<00:00,  2.01s/it]
+#Catalog: Finishing : 100%|████████████████████████████████████████████████████████████████| 6/6 [00:48<00:00,  8.05s/it]
+#---------------------------------------
+#Catalog imported?
+
+

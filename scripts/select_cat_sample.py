@@ -4,13 +4,7 @@
 
 # contains code to select a random sample of sources from ATLAS-Refcat2
 
-# background: the ATLAS-Refcat2 data is stored on the server "Aurora" in groups of healpix:
-# there are 192 level-1 numbered directories, each with 16 level-2 numbered diros,
-# each level-2 diro has a "part-0.feather" file with sources from 4 healpix(NSIDE=32)
-# making 3072 feather files, each with 4 hpix(NSIDE=32) worth of sources.
-
-# ATLAS-Refcat2 contains 991M rows - on Aurora, the following columns:
-# ['ra', 'dec', 'parallax', 'pmra', 'pmdec', 'g', 'r', 'i', 'h32', 'h64', 'h256']
+# background: the ATLAS-Refcat2 data is stored on the server "Aurora" in groups of healpix; see the README for a description.
 
 from argparse import ArgumentParser
 import glob
